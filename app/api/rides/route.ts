@@ -1,9 +1,42 @@
+File: "app/api/rides/route.ts"
 
 import { NextRequest, NextResponse } from "next/server";
 import { getDatabase } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+type RideBody = {
+  driverId?: unknown;
+  start?: unknown;
+  end?: unknown;
+  startLat?: unknown;
+  startLng?: unknown;
+  endLat?: unknown;
+  endLng?: unknown;
+  fare?: unknown;
+};
+
+function coordinate(
+  value: unknown,
+  min: number,
+  max: number
+): number | null | undefined {
+  // Missing coordinates are allowed for rides without map coordinates.
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+
+  if (value < min || value > max) {
+    return undefined;
+  }
+
+  return value;
+}
 
 export async function GET() {
   try {
@@ -28,7 +61,9 @@ export async function GET() {
       FROM rides r
       JOIN users u ON u.id = r.driver_id
       WHERE r.status IN ('SCHEDULED', 'IN PROGRESS')
-      ORDER BY r.created_at DESC
+      ORDER BY
+        CASE WHEN r.status = 'IN PROGRESS' THEN 0 ELSE 1 END,
+        r.created_at DESC
       LIMIT 100
     `;
 
@@ -48,16 +83,29 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    const body: unknown = await request.json();
+    let body: RideBody;
 
-    if (!body || typeof body !== "object") {
-      return NextResponse.json({ error: "Invalid request." }, { status: 400 });
+    try {
+      body = (await request.json()) as RideBody;
+    } catch {
+      return NextResponse.json(
+        { error: "Request body must contain valid JSON." },
+        { status: 400 }
+      );
     }
 
-    const data = body as Record<string, unknown>;
-    const driverId = Number(data.driverId);
-    const start = typeof data.start === "string" ? data.start.trim() : "";
-    const end = typeof data.end === "string" ? data.end.trim() : "";
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return NextResponse.json(
+        { error: "Invalid request body." },
+        { status: 400 }
+      );
+    }
+
+    const driverId = Number(body.driverId);
+    const start =
+      typeof body.start === "string" ? body.start.trim() : "";
+    const end =
+      typeof body.end === "string" ? body.end.trim() : "";
 
     if (
       !Number.isSafeInteger(driverId) ||
@@ -73,43 +121,49 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const coordinate = (value: unknown, min: number, max: number) => {
-      if (value === null || value === undefined || value === "") return null;
-      if (typeof value !== "number" || !Number.isFinite(value)) return NaN;
-      return value >= min && value <= max ? value : NaN;
-    };
+    const startLat = coordinate(body.startLat, -90, 90);
+    const startLng = coordinate(body.startLng, -180, 180);
+    const endLat = coordinate(body.endLat, -90, 90);
+    const endLng = coordinate(body.endLng, -180, 180);
 
-    const startLat = coordinate(data.startLat, -90, 90);
-    const startLng = coordinate(data.startLng, -180, 180);
-    const endLat = coordinate(data.endLat, -90, 90);
-    const endLng = coordinate(data.endLng, -180, 180);
-
-    if ([startLat, startLng, endLat, endLng].some(Number.isNaN)) {
+    if (
+      startLat === undefined ||
+      startLng === undefined ||
+      endLat === undefined ||
+      endLng === undefined
+    ) {
       return NextResponse.json(
         { error: "Invalid coordinates." },
         { status: 400 }
       );
     }
 
-    const fare = data.fare === null || data.fare === undefined
-      ? null
-      : typeof data.fare === "number" &&
-          Number.isFinite(data.fare) &&
-          data.fare >= 0 &&
-          data.fare <= 10000000
-        ? data.fare
-        : NaN;
+    const fare =
+      body.fare === null || body.fare === undefined
+        ? null
+        : typeof body.fare === "number" &&
+            Number.isFinite(body.fare) &&
+            body.fare >= 0 &&
+            body.fare <= 10_000_000
+          ? body.fare
+          : undefined;
 
-    if (Number.isNaN(fare)) {
-      return NextResponse.json({ error: "Invalid fare." }, { status: 400 });
+    if (fare === undefined) {
+      return NextResponse.json(
+        { error: "Invalid fare." },
+        { status: 400 }
+      );
     }
 
     const sql = getDatabase();
 
+    // Confirm that the referenced account exists and is a driver.
+    // This is not a substitute for authenticating the requesting user.
     const owners = await sql`
       SELECT id
       FROM users
-      WHERE id = ${driverId} AND role = 'Driver'
+      WHERE id = ${driverId}
+        AND role = 'Driver'
       LIMIT 1
     `;
 
@@ -146,11 +200,19 @@ export async function POST(request: NextRequest) {
         driver_id AS "driverId",
         start_location AS start,
         end_location AS "end",
+        start_lat AS "startLat",
+        start_lng AS "startLng",
+        end_lat AS "endLat",
+        end_lng AS "endLng",
+        fare_lkr AS fare,
         status,
         created_at AS "createdAt"
     `;
 
-    return NextResponse.json({ ride: created[0] }, { status: 201 });
+    return NextResponse.json(
+      { ride: created[0] },
+      { status: 201 }
+    );
   } catch (error) {
     console.error(
       "Ride creation failed:",
