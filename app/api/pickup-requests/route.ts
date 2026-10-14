@@ -4,15 +4,125 @@ import { getDatabase } from "@/lib/db";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function validId(value: string | null | undefined): boolean {
-  return !!value && /^[1-9]\d*$/.test(value);
+function validId(value: unknown): boolean {
+  return (
+    (typeof value === "string" || typeof value === "number") &&
+    /^[1-9]\d*$/.test(String(value))
+  );
 }
 
-function normalizeAction(value: unknown): string {
-  return typeof value === "string" ? value.trim().toUpperCase() : "";
+// POST: Passenger sends a pickup request.
+export async function POST(request: NextRequest) {
+  try {
+    const body: unknown = await request.json();
+
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return NextResponse.json(
+        { error: "Invalid request body." },
+        { status: 400 }
+      );
+    }
+
+    const data = body as Record<string, unknown>;
+    const rideId = String(data.rideId ?? "");
+    const passengerId = String(data.passengerId ?? "");
+
+    if (!validId(rideId) || !validId(passengerId)) {
+      return NextResponse.json(
+        { error: "A valid rideId and passengerId are required." },
+        { status: 400 }
+      );
+    }
+
+    const sql = getDatabase();
+
+    const passengers = await sql`
+      SELECT id
+      FROM users
+      WHERE id = ${passengerId}
+        AND role = 'Passenger'
+      LIMIT 1
+    `;
+
+    if (passengers.length === 0) {
+      return NextResponse.json(
+        { error: "Passenger account not found." },
+        { status: 404 }
+      );
+    }
+
+    const rides = await sql`
+      SELECT id, driver_id
+      FROM rides
+      WHERE id = ${rideId}
+        AND UPPER(status) IN ('SCHEDULED', 'IN PROGRESS')
+      LIMIT 1
+    `;
+
+    if (rides.length === 0) {
+      return NextResponse.json(
+        { error: "Ride not found or no longer available." },
+        { status: 404 }
+      );
+    }
+
+    if (String(rides[0].driver_id) === passengerId) {
+      return NextResponse.json(
+        { error: "You cannot request your own ride." },
+        { status: 400 }
+      );
+    }
+
+    const inserted = await sql`
+      INSERT INTO pickup_requests (
+        ride_id,
+        passenger_id,
+        status,
+        created_at
+      )
+      VALUES (
+        ${rideId},
+        ${passengerId},
+        'PENDING',
+        NOW()
+      )
+      ON CONFLICT (ride_id, passenger_id) DO NOTHING
+      RETURNING
+        id,
+        ride_id AS "rideId",
+        passenger_id AS "passengerId",
+        status,
+        created_at AS "createdAt"
+    `;
+
+    if (inserted.length === 0) {
+      return NextResponse.json(
+        { error: "You have already requested this ride." },
+        { status: 409 }
+      );
+    }
+
+    return NextResponse.json(
+      { request: inserted[0] },
+      {
+        status: 201,
+        headers: { "Cache-Control": "no-store" }
+      }
+    );
+  } catch (error) {
+    console.error("Create pickup request failed:", error);
+
+    return NextResponse.json(
+      {
+        error:
+          "Unable to create pickup request. Check the database status constraints."
+      },
+      { status: 503 }
+    );
+  }
 }
 
-// GET: Retrieve pickup requests belonging to this driver's rides.
+// GET: Driver retrieves requests for their published rides.
 export async function GET(request: NextRequest) {
   try {
     const driverId = request.nextUrl.searchParams.get("driverId");
@@ -78,7 +188,7 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// PATCH: Accept or reject a pending pickup request.
+// PATCH: Driver accepts or rejects a pending pickup request.
 export async function PATCH(request: NextRequest) {
   try {
     const body: unknown = await request.json();
@@ -93,7 +203,10 @@ export async function PATCH(request: NextRequest) {
     const data = body as Record<string, unknown>;
     const requestId = String(data.requestId ?? "");
     const driverId = String(data.driverId ?? "");
-    const action = normalizeAction(data.action);
+    const action =
+      typeof data.action === "string"
+        ? data.action.trim().toUpperCase()
+        : "";
 
     if (
       !validId(requestId) ||
@@ -111,7 +224,6 @@ export async function PATCH(request: NextRequest) {
 
     const sql = getDatabase();
 
-    // Only update a pending request belonging to one of this driver's rides.
     const updated = await sql`
       UPDATE pickup_requests AS pr
       SET status = ${action}
@@ -132,7 +244,7 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "The request was not found, is no longer pending, or does not belong to this driver's ride."
+            "Request not found, not pending, or not assigned to this driver."
         },
         { status: 409 }
       );
@@ -151,7 +263,7 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json(
       {
         error:
-          "Unable to update the pickup request. Confirm that the database permits the ACCEPTED and REJECTED status values."
+          "Unable to update the request. Confirm that the database allows PENDING, ACCEPTED and REJECTED statuses."
       },
       { status: 503 }
     );
