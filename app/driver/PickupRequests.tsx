@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 
 type PickupRequest = {
-  id: number | string;
-  rideId: number | string;
-  passengerId: number | string;
+  id: string | number;
+  rideId: string | number;
+  passengerId: string | number;
   status: string;
   createdAt?: string;
   passengerName: string;
@@ -19,33 +19,53 @@ type Props = {
   driverId: string;
 };
 
+function getWhatsAppNumber(phone: string): string {
+  let digits = phone.replace(/\D/g, "");
+
+  if (digits.startsWith("00")) {
+    digits = digits.slice(2);
+  }
+
+  if (digits.startsWith("0")) {
+    digits = `94${digits.slice(1)}`;
+  }
+
+  return digits;
+}
+
 export default function PickupRequests({ driverId }: Props) {
   const [requests, setRequests] = useState<PickupRequest[]>([]);
   const [loading, setLoading] = useState(true);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
-  const [refreshKey, setRefreshKey] = useState(0);
 
-  const loadRequests = useCallback(async () => {
-    if (!driverId || !/^[1-9]\d*$/.test(driverId)) {
+  const loadRequests = useCallback(async (manual = false) => {
+    if (!driverId) {
       setRequests([]);
       setLoading(false);
-      setMessage("Valid driver account එකක් අවශ්‍යයි.");
       return;
     }
 
-    setLoading(true);
+    if (manual) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
 
     try {
       const response = await fetch(
         `/api/pickup-requests?driverId=${encodeURIComponent(driverId)}`,
-        { cache: "no-store" }
+        {
+          method: "GET",
+          cache: "no-store"
+        }
       );
 
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || "Requests ලබාගැනීමට නොහැකි වුණා.");
+        throw new Error(data.error || "Could not load pickup requests.");
       }
 
       setRequests(Array.isArray(data.requests) ? data.requests : []);
@@ -54,265 +74,215 @@ export default function PickupRequests({ driverId }: Props) {
       setMessage(
         error instanceof Error
           ? error.message
-          : "Requests ලබාගැනීම අසාර්ථකයි."
+          : "Could not load pickup requests."
       );
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, [driverId]);
 
   useEffect(() => {
     void loadRequests();
-  }, [loadRequests, refreshKey]);
+  }, [loadRequests]);
 
-  async function updateRequest(
+  const updateRequest = async (
     requestId: string | number,
     action: "ACCEPTED" | "REJECTED"
-  ) {
+  ) => {
     const id = String(requestId);
-
-    if (busyId) return;
-
-    setBusyId(id);
+    setUpdatingId(id);
     setMessage("");
 
     try {
       const response = await fetch("/api/pickup-requests", {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json"
+        },
         body: JSON.stringify({
           requestId: id,
           driverId,
-          action,
-        }),
+          action
+        })
       });
 
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(
-          data.error || "Pickup request එක update කිරීමට නොහැකි වුණා."
-        );
+        throw new Error(data.error || "Could not update this request.");
       }
 
-      setRequests((previous) =>
-        previous.map((item) =>
+      setRequests((current) =>
+        current.map((item) =>
           String(item.id) === id
-            ? { ...item, status: data.request?.status || action }
+            ? { ...item, status: action }
             : item
         )
       );
 
       setMessage(
         action === "ACCEPTED"
-          ? "Pickup request එක accept කළා."
-          : "Pickup request එක reject කළා."
+          ? "Pickup request accepted."
+          : "Pickup request rejected."
       );
 
-      setRefreshKey((value) => value + 1);
+      await loadRequests(true);
     } catch (error) {
       setMessage(
         error instanceof Error
           ? error.message
-          : "Request update කිරීම අසාර්ථකයි."
+          : "Could not update this request."
       );
     } finally {
-      setBusyId(null);
+      setUpdatingId(null);
     }
-  }
-
-  function whatsappLink(phone: string) {
-    let digits = phone.replace(/\D/g, "");
-
-    if (digits.startsWith("0")) {
-      digits = "94" + digits.slice(1);
-    } else if (digits.startsWith("94")) {
-      // Already in Sri Lankan international format.
-    }
-
-    return digits ? `https://wa.me/${digits}` : "";
-  }
+  };
 
   return (
-    <section
-      style={{
-        marginTop: 24,
-        padding: 20,
-        borderRadius: 20,
-        border: "1px solid rgba(125, 211, 252, 0.25)",
-        background: "rgba(15, 23, 42, 0.72)",
-        color: "#e2e8f0",
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 12,
-          flexWrap: "wrap",
-        }}
-      >
+    <section className="card-surface space-y-4 p-4">
+      <div className="flex items-center justify-between gap-3">
         <div>
-          <h2 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>
-            Pickup Requests
+          <h2 className="text-sm font-black text-white">
+            📥 Passenger Requests
           </h2>
-          <p style={{ fontSize: 13, opacity: 0.75, marginTop: 6 }}>
-            ඔබේ rides සඳහා ලැබුණු passenger ඉල්ලීම්
+          <p className="mt-1 text-xs text-slate-400">
+            Manage requests for your published rides.
           </p>
         </div>
 
         <button
           type="button"
-          onClick={() => setRefreshKey((value) => value + 1)}
-          disabled={loading}
-          style={{
-            padding: "9px 14px",
-            borderRadius: 10,
-            border: "1px solid rgba(125, 211, 252, 0.35)",
-            background: "#0f2942",
-            color: "#bae6fd",
-            cursor: loading ? "wait" : "pointer",
-          }}
+          className="outline-button rounded-xl px-3 py-2 text-xs font-bold"
+          disabled={refreshing || loading}
+          onClick={() => void loadRequests(true)}
         >
-          {loading ? "Loading..." : "Refresh"}
+          {refreshing ? "Loading..." : "↻ Refresh"}
         </button>
       </div>
 
       {message && (
         <p
           role="status"
-          style={{
-            marginTop: 14,
-            padding: 10,
-            borderRadius: 10,
-            background: "rgba(14, 165, 233, 0.10)",
-            overflowWrap: "anywhere",
-          }}
+          className="rounded-xl border border-cyan-400/20 bg-cyan-400/5 p-3 text-xs text-cyan-100"
         >
           {message}
         </p>
       )}
 
-      {loading && requests.length === 0 ? (
-        <p style={{ marginTop: 18 }}>Requests load වෙමින් පවතී...</p>
+      {loading ? (
+        <div className="py-6 text-center text-sm text-slate-400">
+          Loading pickup requests...
+        </div>
       ) : requests.length === 0 ? (
-        <p style={{ marginTop: 18, opacity: 0.75 }}>
-          දැනට pickup requests නැහැ.
-        </p>
+        <div className="rounded-xl border border-white/5 bg-slate-950/40 p-5 text-center">
+          <p className="text-2xl">🚘</p>
+          <p className="mt-2 text-sm font-bold text-slate-200">
+            No pickup requests yet
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            Requests from passengers will appear here.
+          </p>
+        </div>
       ) : (
-        <div style={{ display: "grid", gap: 14, marginTop: 18 }}>
-          {requests.map((item) => {
-            const id = String(item.id);
-            const pending = item.status.toUpperCase() === "PENDING";
-            const link = whatsappLink(item.passengerPhone);
+        <div className="space-y-3">
+          {requests.map((request) => {
+            const status = String(request.status).toUpperCase();
+            const pending = status === "PENDING";
+            const busy = updatingId === String(request.id);
+            const whatsapp = getWhatsAppNumber(request.passengerPhone);
 
             return (
               <article
-                key={id}
-                style={{
-                  padding: 16,
-                  borderRadius: 16,
-                  border: "1px solid rgba(148, 163, 184, 0.22)",
-                  background: "rgba(2, 6, 23, 0.5)",
-                }}
+                key={String(request.id)}
+                className="rounded-2xl border border-white/10 bg-slate-950/60 p-4"
               >
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    gap: 10,
-                    flexWrap: "wrap",
-                  }}
-                >
-                  <h3 style={{ margin: 0, fontSize: 17, fontWeight: 650 }}>
-                    {item.passengerName || "Passenger"}
-                  </h3>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="font-bold text-white">
+                      {request.passengerName || "Passenger"}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-400">
+                      Request #{request.id}
+                    </p>
+                  </div>
 
-                  <span
-                    style={{
-                      fontSize: 12,
-                      padding: "5px 9px",
-                      borderRadius: 20,
-                      background: pending
-                        ? "rgba(234, 179, 8, 0.14)"
-                        : "rgba(34, 197, 94, 0.12)",
-                      color: pending ? "#fde68a" : "#86efac",
-                    }}
-                  >
-                    {item.status}
+                  <span className="status-pill">
+                    {status || "UNKNOWN"}
                   </span>
                 </div>
 
-                <p style={{ marginTop: 12, marginBottom: 6 }}>
-                  <strong>From:</strong> {item.startLocation}
-                </p>
-                <p style={{ marginTop: 0, marginBottom: 6 }}>
-                  <strong>To:</strong> {item.endLocation}
-                </p>
-                <p style={{ marginTop: 0, marginBottom: 6 }}>
-                  <strong>Fare:</strong>{" "}
-                  {item.fareLkr == null
-                    ? "Not specified"
-                    : `LKR ${Number(item.fareLkr).toLocaleString("en-LK")}`}
-                </p>
-                <p style={{ marginTop: 0, opacity: 0.8 }}>
-                  <strong>Phone:</strong> {item.passengerPhone}
-                </p>
+                <div className="mt-4 space-y-2 text-sm">
+                  <div className="flex gap-2">
+                    <span className="text-cyan-300">●</span>
+                    <span className="text-slate-200">
+                      {request.startLocation}
+                    </span>
+                  </div>
 
-                {link && (
-                  <a
-                    href={link}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{
-                      display: "inline-block",
-                      color: "#7dd3fc",
-                      marginBottom: 12,
-                      textDecoration: "underline",
-                    }}
-                  >
-                    WhatsApp passenger
-                  </a>
-                )}
+                  <div className="flex gap-2">
+                    <span className="text-fuchsia-300">●</span>
+                    <span className="text-slate-200">
+                      {request.endLocation}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs text-slate-400">
+                    Ride #{request.rideId}
+                  </p>
+
+                  <p className="font-bold text-cyan-300">
+                    {request.fareLkr == null
+                      ? "Fare not set"
+                      : `LKR ${Number(request.fareLkr).toLocaleString("en-LK")}`}
+                  </p>
+                </div>
+
+                <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {whatsapp && (
+                    <a
+                      href={`https://wa.me/${whatsapp}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="outline-button rounded-xl p-3 text-center text-xs font-bold"
+                    >
+                      WhatsApp Passenger
+                    </a>
+                  )}
+
+                  {pending && (
+                    <>
+                      <button
+                        type="button"
+                        className="neon-button rounded-xl p-3 text-xs font-black"
+                        disabled={busy}
+                        onClick={() =>
+                          void updateRequest(request.id, "ACCEPTED")
+                        }
+                      >
+                        {busy ? "Updating..." : "✓ Accept Request"}
+                      </button>
+
+                      <button
+                        type="button"
+                        className="outline-button rounded-xl p-3 text-xs font-bold sm:col-span-2"
+                        disabled={busy}
+                        onClick={() =>
+                          void updateRequest(request.id, "REJECTED")
+                        }
+                      >
+                        {busy ? "Updating..." : "✕ Reject Request"}
+                      </button>
+                    </>
+                  )}
+                </div>
 
                 {pending && (
-                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                    <button
-                      type="button"
-                      disabled={busyId !== null}
-                      onClick={() => void updateRequest(item.id, "ACCEPTED")}
-                      style={{
-                        padding: "10px 16px",
-                        border: 0,
-                        borderRadius: 10,
-                        background: "#15803d",
-                        color: "#fff",
-                        cursor: busyId ? "wait" : "pointer",
-                        opacity: busyId ? 0.6 : 1,
-                      }}
-                    >
-                      {busyId === id ? "Updating..." : "Accept"}
-                    </button>
-
-                    <button
-                      type="button"
-                      disabled={busyId !== null}
-                      onClick={() => void updateRequest(item.id, "REJECTED")}
-                      style={{
-                        padding: "10px 16px",
-                        border: "1px solid rgba(248, 113, 113, 0.5)",
-                        borderRadius: 10,
-                        background: "rgba(127, 29, 29, 0.35)",
-                        color: "#fecaca",
-                        cursor: busyId ? "wait" : "pointer",
-                        opacity: busyId ? 0.6 : 1,
-                      }}
-                    >
-                      Reject
-                    </button>
-                  </div>
+                  <p className="mt-3 text-[10px] leading-4 text-slate-500">
+                    Accepting or rejecting updates the saved request status.
+                  </p>
                 )}
               </article>
             );
