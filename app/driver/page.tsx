@@ -10,6 +10,7 @@ import {
 } from "react";
 import type { FormEvent } from "react";
 import "leaflet/dist/leaflet.css";
+import PickupRequests from "./PickupRequests";
 
 type Role = "Driver" | "Passenger";
 type Point = { lat: number; lng: number };
@@ -303,7 +304,7 @@ export default function DriverPage() {
   const watchId = useRef<number | null>(null);
   const requestInProgress = useRef(false);
 
-  // Restore an existing browser profile.
+  // Restore the saved database profile from this browser.
   useEffect(() => {
     try {
       const stored = localStorage.getItem("galaxy-rides-profile");
@@ -315,8 +316,6 @@ export default function DriverPage() {
 
       const value = JSON.parse(stored) as Partial<Profile>;
 
-      // Old demo profiles don't have a database ID.
-      // They cannot create database rides or pickup requests.
       if (
         !value.id ||
         !value.name ||
@@ -352,7 +351,7 @@ export default function DriverPage() {
     }
   }, []);
 
-  // Load real rides from the API. No demo rides are mixed in.
+  // Load actual rides from the database API.
   const loadRides = useCallback(async () => {
     setLoadingRides(true);
 
@@ -377,15 +376,17 @@ export default function DriverPage() {
         const startLandmark = findPlace(startName);
         const endLandmark = findPlace(endName);
 
-        const fallback = startLandmark?.point ||
+        const fallback =
+          startLandmark?.point ||
           endLandmark?.point ||
           places[4].point;
 
         return {
           id: String(item.id),
-          driverId: item.driverId != null
-            ? String(item.driverId)
-            : undefined,
+          driverId:
+            item.driverId != null
+              ? String(item.driverId)
+              : undefined,
           driverName: String(item.driverName || "Driver"),
           phone: String(item.phone || ""),
           verified: item.verified === true,
@@ -411,10 +412,10 @@ export default function DriverPage() {
 
   useEffect(() => {
     if (!profile) return;
-    loadRides();
+    void loadRides();
   }, [profile, loadRides]);
 
-  // Clean up device GPS tracking when leaving the page.
+  // Clean up device GPS tracking when leaving this page.
   useEffect(
     () => () => {
       if (watchId.current !== null && navigator.geolocation) {
@@ -526,7 +527,6 @@ export default function DriverPage() {
         phone: String(dbUser.phone || cleanPhone),
         role,
         vehicle: cleanVehicle,
-        // Only the server's existing KYC status can mark a user verified.
         verified: dbUser.kycStatus === "verified",
       };
 
@@ -536,6 +536,7 @@ export default function DriverPage() {
       setRole(user.role);
       setVehicle(user.vehicle);
       setRegisterOpen(false);
+
       localStorage.setItem(
         "galaxy-rides-profile",
         JSON.stringify(user)
@@ -557,8 +558,6 @@ export default function DriverPage() {
   function switchRole() {
     if (!profile) return;
 
-    // The current API does not update the role in the database.
-    // Don't silently change a local role and then submit requests as another role.
     setMessage(
       "Role switching needs a server-side account update. To use Driver or Passenger features, register with that role."
     );
@@ -577,11 +576,10 @@ export default function DriverPage() {
       return;
     }
 
-    // There is no secure KYC upload/review API yet.
-    // Never grant verification from a client-side file selection.
     setKycOpen(false);
     setNic(null);
     setLicense(null);
+
     setMessage(
       "KYC demo submitted locally only. Documents were not uploaded, and your account remains unverified."
     );
@@ -1156,6 +1154,9 @@ export default function DriverPage() {
                       currently updates this device's map only; it is not
                       shared live with other users.
                     </p>
+
+                    {/* NEW: Driver pickup request dashboard */}
+                    <PickupRequests driverId={profile.id} />
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -1250,7 +1251,7 @@ export default function DriverPage() {
                             type="button"
                             className="outline-button rounded-xl p-3 text-xs font-bold"
                             disabled={pickupIds.includes(ride.id)}
-                            onClick={() => requestPickup(ride)}
+                            onClick={() => void requestPickup(ride)}
                           >
                             {pickupIds.includes(ride.id)
                               ? "✓ Request sent"
@@ -1531,4 +1532,4 @@ export default function DriverPage() {
       )}
     </main>
   );
-}
+      }
